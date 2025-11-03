@@ -11,7 +11,7 @@ uv venv
 source .venv/bin/activate
 
 # Install the package in editable mode
-uv pip install -e .
+uv pip install .
 
 # Install dependencies
 uv pip install lmcache
