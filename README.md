@@ -141,3 +141,17 @@ sb-cli submit swe-bench_verified test \
 | `<CPU_SIZE_GB>` | CPU memory size in GB for KV cache offload | `200` |
 | `<OUTPUT_DIRECTORY>` | Directory for analysis output | `./continuum_exp/result` |
 | `<UNIQUE_RUN_ID>` | Identifier for evaluation run | `continuum_run_001` |
+
+## Citation
+If you find this helpful, please cite our paper:
+```
+@misc{li2025continuumefficientrobustmultiturn,
+      title={Continuum: Efficient and Robust Multi-Turn LLM Agent Scheduling with KV Cache Time-to-Live}, 
+      author={Hanchen Li and Qiuyang Mang and Runyuan He and Qizheng Zhang and Huanzhi Mao and Xiaokun Chen and Alvin Cheung and Joseph Gonzalez and Ion Stoica},
+      year={2025},
+      eprint={2511.02230},
+      archivePrefix={arXiv},
+      primaryClass={cs.OS},
+      url={https://arxiv.org/abs/2511.02230}, 
+}
+```
