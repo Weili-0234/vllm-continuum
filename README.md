@@ -97,7 +97,7 @@ vllm serve meta-llama/Llama-3.1-70B-Instruct \
 
 ### Running SWE-bench Evaluation
 
-**Note:** The default evaluation setup uses `meta-llama/Llama-3.1-70B-Instruct` on 4 H100 GPUs. Mini-swe-agent may encounter issues with smaller or simpler models.
+**Note:** The default evaluation setup uses `meta-llama/Llama-3.1-70B-Instruct` on 4 H100 GPUs. Mini-swe-agent may encounter issues with less intelligent models due to weird model behaviors.
 
 1. **Start the vLLM server** (see [Usage](#usage) section above)
 
