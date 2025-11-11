@@ -126,7 +126,15 @@ class Scheduler(SchedulerInterface):
         # Priority queues for requests.
         self.waiting = create_request_queue(self.policy)
         self.running: list[Request] = []
-        self.tool_call_estimator = ToolCallEstimator()
+
+        # Initialize ToolCallEstimator with tokenizer config
+        self.tool_call_estimator = ToolCallEstimator(
+            model_name=vllm_config.model_config.tokenizer,
+            tokenizer_mode=vllm_config.model_config.tokenizer_mode,
+            trust_remote_code=vllm_config.model_config.trust_remote_code,
+            tokenizer_revision=vllm_config.model_config.tokenizer_revision,
+        )
+
         # TODO(Hanchen) This stored the list of pineed requests and the time they need to be removed
         self.pinned_requests: list[Tuple[Request, float]] = []
         # Track the first entry time for each job_id in running queue (for job_id level FCFS)
@@ -264,9 +272,6 @@ class Scheduler(SchedulerInterface):
         # num_tokens_with_spec. This is general enough to cover
         # chunked prefills, prefix caching, speculative decoding,
         # and the "jump decoding" optimization in the future.
-        
-        # Record scheduling start time
-        scheduling_start_time = self.continuum_recorder.scheduling_started()
         
         self.unpin_requests_regular()
         
@@ -788,9 +793,6 @@ class Scheduler(SchedulerInterface):
             self.kv_event_publisher.publish(batch)
 
         self._update_after_schedule(scheduler_output)
-        
-        # Record scheduling end time
-        self.continuum_recorder.scheduling_finished(scheduling_start_time)
         
         return scheduler_output
 
