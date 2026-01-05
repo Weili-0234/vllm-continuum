@@ -206,8 +206,11 @@ def main(
     shuffle: bool = typer.Option(False, "--shuffle", help="Shuffle instances", rich_help_panel="Data selection"),
     output: str = typer.Option("", "-o", "--output", help="Output directory", rich_help_panel="Basic"),
     workers: int = typer.Option(1, "-w", "--workers", help="Number of worker threads for parallel processing", rich_help_panel="Basic"),
+    use_jps: bool = typer.Option(False, "--use-jps", help="Use jobs per second rate limiting instead of workers", rich_help_panel="Basic"),
+    jps: float = typer.Option(1.0, "--jps", help="Jobs per second (only used when --use-jps is enabled)", rich_help_panel="Basic"),
     model: str | None = typer.Option(None, "-m", "--model", help="Model to use", rich_help_panel="Basic"),
     model_class: str | None = typer.Option(None, "-c", "--model-class", help="Model class to use (e.g., 'anthropic' or 'minisweagent.models.anthropic.AnthropicModel')", rich_help_panel="Advanced"),
+    port: int | None = typer.Option(None, "-p", "--port", help="Port for vLLM server (e.g., 8100)", rich_help_panel="Advanced"),
     redo_existing: bool = typer.Option(False, "--redo-existing", help="Redo existing instances", rich_help_panel="Data selection"),
     config_spec: Path = typer.Option( builtin_config_dir / "extra" / "swebench.yaml", "-c", "--config", help="Path to a config file", rich_help_panel="Basic"),
     environment_class: str | None = typer.Option( None, "--environment-class", help="Environment type to use. Recommended are docker or singularity", rich_help_panel="Advanced"),
@@ -238,6 +241,8 @@ def main(
         config.setdefault("model", {})["model_name"] = model
     if model_class is not None:
         config.setdefault("model", {})["model_class"] = model_class
+    if port is not None:
+        config.setdefault("model", {})["port"] = port
 
     progress_manager = RunBatchProgressManager(len(instances), output_path / f"exit_statuses_{time.time()}.yaml")
 
@@ -252,22 +257,73 @@ def main(
                 logger.error(f"Error in future for instance {instance_id}: {e}", exc_info=True)
                 progress_manager.on_uncaught_exception(instance_id, e)
 
-    with Live(progress_manager.render_group, refresh_per_second=4):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(process_instance, instance, output_path, config, progress_manager, idx + 1): instance[
-                    "instance_id"
-                ]
-                for idx, instance in enumerate(instances)
-            }
+    if use_jps:
+        # JPS mode: process instances concurrently with Poisson process arrival times
+        logger.info(f"Using JPS mode with Poisson process at rate {jps} jobs per second")
+
+        # Pre-calculate arrival times using Poisson process (exponential inter-arrival times)
+        arrival_times = []
+        current_time = time.time()
+        for idx in range(len(instances)):
+            if idx == 0:
+                arrival_times.append(current_time)
+            else:
+                inter_arrival_time = random.expovariate(jps)
+                arrival_times.append(arrival_times[-1] + inter_arrival_time)
+
+        # Create threads for each job
+        threads = []
+
+        def run_job_at_scheduled_time(scheduled_time, instance, idx):
+            """Wait until scheduled time, then process the instance."""
+            wait_time = scheduled_time - time.time()
+            if wait_time > 0:
+                time.sleep(wait_time)
+
             try:
-                process_futures(futures)
+                process_instance(instance, output_path, config, progress_manager, idx + 1)
+            except Exception as e:
+                instance_id = instance["instance_id"]
+                logger.error(f"Error processing instance {instance_id}: {e}", exc_info=True)
+                progress_manager.on_uncaught_exception(instance_id, e)
+
+        with Live(progress_manager.render_group, refresh_per_second=4):
+            try:
+                # Start all threads
+                for idx, (instance, scheduled_time) in enumerate(zip(instances, arrival_times)):
+                    thread = threading.Thread(
+                        target=run_job_at_scheduled_time,
+                        args=(scheduled_time, instance, idx)
+                    )
+                    thread.start()
+                    threads.append(thread)
+
+                # Wait for all threads to complete
+                for thread in threads:
+                    thread.join()
+
             except KeyboardInterrupt:
-                logger.info("Cancelling all pending jobs. Press ^C again to exit immediately.")
-                for future in futures:
-                    if not future.running() and not future.done():
-                        future.cancel()
-                process_futures(futures)
+                logger.info("Interrupted by user. Waiting for running jobs to complete...")
+                for thread in threads:
+                    thread.join()
+    else:
+        # Worker pool mode: process instances in parallel
+        with Live(progress_manager.render_group, refresh_per_second=4):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(process_instance, instance, output_path, config, progress_manager, idx + 1): instance[
+                        "instance_id"
+                    ]
+                    for idx, instance in enumerate(instances)
+                }
+                try:
+                    process_futures(futures)
+                except KeyboardInterrupt:
+                    logger.info("Cancelling all pending jobs. Press ^C again to exit immediately.")
+                    for future in futures:
+                        if not future.running() and not future.done():
+                            future.cancel()
+                    process_futures(futures)
 
 
 if __name__ == "__main__":

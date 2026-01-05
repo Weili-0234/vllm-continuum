@@ -1,0 +1,24 @@
+
+docker run --gpus '"device=4"' \
+    --shm-size 32g \
+    -p 30000:30000 \
+    -v ~/.cache/huggingface:/root/.cache/huggingface \
+    --env "HF_TOKEN=******" \
+    --ipc=host \             
+    lmsysorg/sglang:latest \
+    python3 -m sglang.launch_server --model-path meta-llama/Llama-3.1-8B-Instruct --host 0.0.0.0 --port 30000
+
+SGLang Docker Image Details
+Image Information:
+SGLang Version: 0.5.5.post3
+Image Tag: lmsysorg/sglang:latest
+Image ID: c5740cf95371
+Created: November 17, 2025 (6 days ago)
+Size: 27.5 GB
+Architecture: amd64
+Software Stack:
+CUDA: 12.9.1
+cuDNN: 9.10.2.21
+NCCL: 2.27.3 (for multi-GPU communication)
+FlashInfer: 0.5.2 (for efficient attention computation)
+Base OS: Ubuntu 22.04

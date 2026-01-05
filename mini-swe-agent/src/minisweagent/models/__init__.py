@@ -85,8 +85,8 @@ _MODEL_CLASS_MAPPING = {
     "portkey": "minisweagent.models.portkey_model.PortkeyModel",
     "deterministic": "minisweagent.models.test_models.DeterministicModel",
     "vllm": "minisweagent.models.vllm_model.VllmModel",
+    "sglang": "minisweagent.models.sglang_model.SglangModel",
 }
-
 
 def get_model_class(model_name: str, model_class: str = "") -> type:
     """Select the best model class.

@@ -58,13 +58,15 @@ Run vLLM with standard scheduling:
 ```bash
 # Without CPU offload
 vllm serve <MODEL_NAME> \
-  --tensor-parallel-size <NUM_GPUS>
+  --tensor-parallel-size <NUM_GPUS> \
+  --port <PORT_ID>
 
 # With CPU offload (requires lmcache)
 LMCACHE_MAX_LOCAL_CPU_SIZE=<CPU_SIZE_GB> \
 vllm serve <MODEL_NAME> \
   --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}' \
-  --tensor-parallel-size <NUM_GPUS>
+  --tensor-parallel-size <NUM_GPUS> \
+  --port <PORT_ID>
 ```
 
 #### Continuum Scheduling Mode
@@ -75,14 +77,16 @@ Run vLLM with Continuum scheduling for optimized performance:
 # Without CPU offload
 vllm serve <MODEL_NAME> \
   --scheduling-policy continuum \
-  --tensor-parallel-size <NUM_GPUS>
+  --tensor-parallel-size <NUM_GPUS> \
+  --port <PORT_ID>
 
 # With CPU offload (requires lmcache)
 LMCACHE_MAX_LOCAL_CPU_SIZE=<CPU_SIZE_GB> \
 vllm serve <MODEL_NAME> \
   --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}' \
   --scheduling-policy continuum \
-  --tensor-parallel-size <NUM_GPUS>
+  --tensor-parallel-size <NUM_GPUS> \
+  --port <PORT_ID>
 ```
 
 **Example:**
@@ -97,7 +101,7 @@ vllm serve meta-llama/Llama-3.1-70B-Instruct \
 
 ### Running SWE-bench Evaluation
 
-**Note:** The default evaluation setup uses `meta-llama/Llama-3.1-70B-Instruct` on 4 H100 GPUs. Mini-swe-agent may encounter issues with less intelligent models due to weird model behaviors.
+**Note:** The default evaluation setup uses `meta-llama/Llama-3.1-70B-Instruct` on 4 H100 GPUs. Mini-swe-agent may encounter issues with smaller or simpler models.
 
 1. **Start the vLLM server** (see [Usage](#usage) section above)
 
@@ -107,15 +111,33 @@ vllm serve meta-llama/Llama-3.1-70B-Instruct \
 # Clear previous output before each run
 rm -rf ./swebench_output
 
-# Run evaluation
+# Run evaluation (fixed concurrency)
 mini-extra swebench \
   --model-class vllm \
   --model <MODEL_NAME> \
+  --port <PORT_ID> \
   --subset verified \
   --split test \
   --workers 64 \
   --output ./swebench_output
+
+# Run evaluation (Poisson arrival rate)
+mini-extra swebench \
+  --model-class vllm \
+  --model <MODEL_NAME> \
+  --port <PORT_ID> \
+  --subset verified \
+  --split test \
+  --use-jps --jps 1.0 \
+  --output ./swebench_output
 ```
+
+#### Load Control Modes
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| Workers | `--workers N` | Fixed N concurrent jobs |
+| JPS | `--use-jps --jps X` | Poisson process at X jobs/second |
 
 ### Analyzing Results
 
@@ -141,17 +163,6 @@ sb-cli submit swe-bench_verified test \
 | `<CPU_SIZE_GB>` | CPU memory size in GB for KV cache offload | `200` |
 | `<OUTPUT_DIRECTORY>` | Directory for analysis output | `./continuum_exp/result` |
 | `<UNIQUE_RUN_ID>` | Identifier for evaluation run | `continuum_run_001` |
-
-## Citation
-If you find this helpful, please cite our paper:
-```
-@misc{li2025continuumefficientrobustmultiturn,
-      title={Continuum: Efficient and Robust Multi-Turn LLM Agent Scheduling with KV Cache Time-to-Live}, 
-      author={Hanchen Li and Qiuyang Mang and Runyuan He and Qizheng Zhang and Huanzhi Mao and Xiaokun Chen and Alvin Cheung and Joseph Gonzalez and Ion Stoica},
-      year={2025},
-      eprint={2511.02230},
-      archivePrefix={arXiv},
-      primaryClass={cs.OS},
-      url={https://arxiv.org/abs/2511.02230}, 
-}
-```
+| `--workers` | Fixed number of concurrent jobs | `64` |
+| `--use-jps` | Enable Poisson arrival mode | - |
+| `--jps` | Jobs per second (with `--use-jps`) | `1.0` |
