@@ -378,7 +378,11 @@ class Scheduler(SchedulerInterface):
                         #TODO (Hanchen) we need to add a check unpin requests with the same job id.
                         if preempted_req in scheduled_running_reqs:
                             scheduled_running_reqs.remove(preempted_req)
-                        
+                    
+                        if preempted_req.request_id in num_scheduled_tokens:
+                            del num_scheduled_tokens[preempted_req.request_id]
+                        if preempted_req.request_id in req_to_new_blocks:
+                            del req_to_new_blocks[preempted_req.request_id]
                         self.continuum_recorder.request_evicted_from_running_queue(preempted_req)
                     else:
                         preempted_req = self.running.pop()
