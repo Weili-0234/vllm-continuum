@@ -2,6 +2,7 @@ from vllm.v1.request import Request
 from typing import Optional
 import time
 import re
+import json
 from vllm.logger import init_logger
 from vllm.transformers_utils.tokenizer import AnyTokenizer, get_tokenizer
 
@@ -135,8 +136,18 @@ class ToolCallEstimator:
     #TODO Hanchen This is currently just an average 
     def update_func_call_exec_time(self, job_id: str) -> None:
         #this is called when the func call is back again in scheduler.py, update the exec time with last_func_call
-        last_departure_time = self.job_to_history[job_id][-1]["departure_time"]
-        func = self.job_to_history[job_id][-1]["func_call"]
+        # Only update when the most recent history entry is a completed request.
+        # Under high load / client retries, we may observe multiple arrivals before a finish,
+        # leaving the tail entry without "func_call"/"departure_time". In that case, skip.
+        if job_id not in self.job_to_history or not self.job_to_history[job_id]:
+            return
+
+        last = self.job_to_history[job_id][-1]
+        if "departure_time" not in last or "func_call" not in last:
+            return
+
+        last_departure_time = last["departure_time"]
+        func = last["func_call"]
         exec_time = time.time() - last_departure_time
 
         if func not in self.record_func_call_to_exec_time:
@@ -166,10 +177,18 @@ class ToolCallEstimator:
             assert request.last_func_call is None
             self.job_to_history[request.job_id].append({"arrival_time": request.arrival_time})
             return
-        request.last_func_call = self.job_to_history[request.job_id][-1]["func_call"]
-        logger.info(f"Request job id: {request.job_id}, last func call: {request.last_func_call}")
-
-        self.update_func_call_exec_time(request.job_id)
+        last = self.job_to_history[request.job_id][-1]
+        if "func_call" in last:
+            request.last_func_call = last["func_call"]
+            logger.info(f"Request job id: {request.job_id}, last func call: {request.last_func_call}")
+            self.update_func_call_exec_time(request.job_id)
+        else:
+            # Do not crash if we see a re-entrant arrival before the previous request finished.
+            # Keep client-provided request.last_func_call as-is (may be None).
+            logger.warning(
+                f"Request job id: {request.job_id} has no prior func_call in latest history entry; "
+                f"leaving request.last_func_call={request.last_func_call!r} and skipping exec-time update."
+            )
 
         self.job_to_history[request.job_id].append({"arrival_time": request.arrival_time})
         return
@@ -177,25 +196,102 @@ class ToolCallEstimator:
     def request_finished(self, request: Request) -> None:
         logger.info(f"Request job id finishing: {request.job_id}, time is {time.time()}")
 
-        # Detokenize output and parse function call
-        this_func_call = None
-        if self.tokenizer is not None and len(request.output_token_ids) > 0:
-            try:
-                # Detokenize the output tokens
-                output_text = self.tokenizer.decode(
-                    request.output_token_ids,
-                    skip_special_tokens=True
-                )
+        # Respect client-provided this_func_call (via sampling_params.extra_args).
+        # If provided, do NOT overwrite it with our own parsing.
+        if request.this_func_call is not None and str(request.this_func_call).strip() != "":
+            this_func_call: Optional[str] = str(request.this_func_call).strip()
+        else:
+            this_func_call = None
 
-                # Parse function call using the parser
-                this_func_call = self.parser.parse(output_text)
+            output_text = ""
+            if self.tokenizer is not None and len(request.output_token_ids) > 0:
+                try:
+                    output_text = self.tokenizer.decode(
+                        request.output_token_ids,
+                        skip_special_tokens=True,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Error detokenizing output for request {request.request_id}: {e}"
+                    )
+                    output_text = ""
 
-                if this_func_call:
-                    logger.info(f"Extracted func_call: {this_func_call} from output")
-                else:
-                    logger.debug(f"No function call found in output: {output_text[:200]}")
-            except Exception as e:
-                logger.warning(f"Error detokenizing/parsing output for request {request.request_id}: {e}")
+            if output_text:
+                # Prefer Hermes/Orchestrator <tool_call> ... </tool_call> blocks.
+                if "<tool_call>" in output_text:
+                    tool_call_regex = re.compile(
+                        r"<tool_call>(.*?)</tool_call>|<tool_call>(.*)",
+                        re.DOTALL,
+                    )
+                    tuples = tool_call_regex.findall(output_text)
+                    raw_calls: list[dict] = []
+                    for a, b in tuples:
+                        payload = (a if a else b).strip()
+                        if not payload:
+                            continue
+                        try:
+                            raw_calls.append(json.loads(payload))
+                        except Exception:
+                            continue
+
+                    if len(raw_calls) > 1:
+                        this_func_call = "multi_tool"
+                    elif len(raw_calls) == 1:
+                        call = raw_calls[0]
+                        name = call.get("name")
+                        args = call.get("arguments")
+                        if isinstance(args, str):
+                            # Some tool-call formats store arguments as a JSON-encoded string.
+                            try:
+                                args = json.loads(args)
+                            except Exception:
+                                pass
+                        # Map call_expert -> expert-1/2/3 when the argument exists.
+                        if name == "call_expert" and isinstance(args, dict):
+                            expert_choice = args.get("expert")
+                            if isinstance(expert_choice, str) and expert_choice.strip():
+                                this_func_call = expert_choice.strip()
+                            else:
+                                this_func_call = "call_expert"
+                        elif isinstance(name, str) and name.strip():
+                            this_func_call = name.strip()
+
+                # Llama3 JSON tool call style: {"name": "...", "parameters": {...}}
+                if this_func_call is None:
+                    s = output_text.strip()
+                    if s.startswith("{") and s.endswith("}"):
+                        try:
+                            obj = json.loads(s)
+                            if isinstance(obj, dict):
+                                name = obj.get("name")
+                                params = obj.get("parameters")
+                                if isinstance(params, str):
+                                    try:
+                                        params = json.loads(params)
+                                    except Exception:
+                                        pass
+                                if isinstance(name, str) and name.strip():
+                                    if name == "call_expert" and isinstance(params, dict):
+                                        expert_choice = params.get("expert")
+                                        if isinstance(expert_choice, str) and expert_choice.strip():
+                                            this_func_call = expert_choice.strip()
+                                        else:
+                                            this_func_call = "call_expert"
+                                    else:
+                                        this_func_call = name.strip()
+                        except Exception:
+                            pass
+
+                # Fallback to legacy SWE-bench bash parser.
+                if this_func_call is None:
+                    try:
+                        this_func_call = self.parser.parse(output_text)
+                    except Exception:
+                        this_func_call = None
+
+                # No tool call detected -> treat as a user-facing turn.
+                if this_func_call is None:
+                    this_func_call = "user_turn"
 
         request.this_func_call = this_func_call
         self.job_to_history[request.job_id].append({
@@ -203,4 +299,3 @@ class ToolCallEstimator:
             "func_call": request.this_func_call
         })
         return
-
